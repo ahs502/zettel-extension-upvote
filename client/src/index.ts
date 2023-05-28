@@ -1,93 +1,119 @@
 import { ZettelExtensions } from '@zettelooo/extension-api'
-import { PageExtensionData } from '../../shared/PageExtensionData'
+import { Id } from '@zettelooo/commons'
 
+// Type definition for stored extended data on cards:
+type CardExtensionData = undefined | { readonly upvotingUserIds: readonly Id[] }
+
+// The main body of module code:
 void ((window as ZettelExtensions.WindowWithStarter).$starter = function (api) {
-  this.while('activated', function ({ activatedApi }) {
-    this.while('signedIn', function ({ signedInApi }) {
-      this.while('pagePanel', function ({ pagePanelApi }) {
-        if (!this.scopes.includes(ZettelExtensions.Scope.Page)) return
+  // Access API which is only available when the user is signed-in:
+  this.while('signedIn', function ({ signedInApi }) {
+    // Access API to handle each displaying card:
+    this.while('card', function ({ cardApi }) {
+      // Append the upvote button to the card as an extended injected HTML:
+      const upvoteButtonRegistration = this.register(
+        cardApi.registry.extendedHtmlContent<{
+          readonly numberOfUpvotes: number
+          readonly alreadyUpvotedByThisUser: boolean
+        }>(() => ({
+          initialState: {
+            numberOfUpvotes: 0,
+            alreadyUpvotedByThisUser: false,
+          },
+          render: ({ renderContext }) => ({
+            encapsulated: true,
+            html: `
+<style>
+  #root {
+    position: relative;
+    margin-top: ${renderContext.theme.unitPx * -2}px;
+    padding: 0 ${renderContext.theme.unitPx * 2}px;
+    display: flex;
+    justify-content: flex-end;
+  }
+  .upvote-button {
+    border: 2px solid ${renderContext.theme.palette.divider};
+    border-radius: ${renderContext.theme.unitPx * 2}px;
+    height: ${renderContext.theme.unitPx * 4}px;
+    padding: ${renderContext.theme.unitPx * 0.25}px;
+    display: inline-flex;
+    align-items: center;
+    gap: ${renderContext.theme.unitPx * 1}px;
+    font-size: ${renderContext.theme.unitPx * 2}px;
+    cursor: pointer;
+    background-color: ${renderContext.theme.palette.background.paper};
+  }
+  .upvoted {
+    background-color: ${renderContext.theme.palette.primary.main};
+    color: ${renderContext.theme.palette.primary.contrastText};
+  }
+  .upvotes-count {
+    padding-left: ${renderContext.theme.unitPx * 1}px;
+  }
+  .upvote-icon {
+    height: 100%;
+  }
+</style>
 
-        const applyPageExtensionData = (): void => {
-          const pageExtensionData = pagePanelApi.data.page.extensionData as PageExtensionData
-          quickActionRegistration.reference.current?.update({
-            disabled: false,
-            switchChecked: Boolean(pageExtensionData?.enabled),
-          })
-          tipMessageRegistration.reference.current?.update({
-            initialState: pageExtensionData,
-            hidden: !pageExtensionData,
-          })
-        }
-
-        this.register(pagePanelApi.watch(data => data.page.extensionData, applyPageExtensionData))
-
-        const quickActionRegistration = this.register(
-          pagePanelApi.registry.quickAction(() => ({
-            title: 'My extension',
-            description: 'My extension description',
-            avatarUrl: api.header.avatar.file ? api.getFileUrl(api.header.avatar.file) : api.header.avatar.dataUrl,
-            disabled: true,
-            switchChecked: false,
-            async onClick() {
-              activatedApi.access.showMessage('My extension', 'This is a message from my extension!', {
-                variant: 'success',
-              })
-            },
-            async onToggleSwitch(checked) {
-              quickActionRegistration.reference.current?.update({
-                disabled: true,
-              })
-              await setPageExtensionData(checked ? { enabled: true } : undefined)
-              quickActionRegistration.reference.current?.update({
-                disabled: false,
-              })
-            },
-          }))
-        )
-
-        const loadingIndicatorRegistration = this.register(
-          pagePanelApi.registry.loadingIndicator(() => `Updating ${api.header.name} status...`),
-          { initiallyInactive: true }
-        )
-
-        const tipMessageRegistration = this.register(
-          pagePanelApi.registry.message<PageExtensionData>(() => ({
-            initialState: undefined,
-            render: ({ renderContext, un }) => ({
-              encapsulated: true,
-              html: !renderContext.state
-                ? '<p>Loading...</p>'
-                : `
-<div>
-  <p style="display: flex; align-items: center; gap: 10px;">
-    <img src="${api.getFileUrl('idea.png')}" alt="tip" />
-    This is a tip about my extension!
-  </p>
-  <p>
-    This will show up when the extension is enabled on the page.
-  </p>
+<div id="root">
+  <button class="upvote-button" title="👍 Upvote">
+    <span class="upvotes-count"></span>
+    <img class="upvote-icon" src="${api.getFileUrl({ filePath: 'upvote-icon.png' })}" alt="👍" />
+  </button>
 </div>
 `,
-            }),
-            variant: 'information',
-            hidden: true,
-          }))
-        )
+            onRendered: ({ sanitizedHtml, containerElement, currentContext }) => {
+              const root = containerElement.querySelector('#root') as HTMLDivElement
+              const upvoteButton = root.querySelector('.upvote-button') as HTMLButtonElement
+              const upvotesCount = upvoteButton.querySelector('.upvotes-count') as HTMLSpanElement
 
-        async function setPageExtensionData(newPageExtensionData: PageExtensionData): Promise<void> {
-          try {
-            loadingIndicatorRegistration.activate()
-            await signedInApi.access.setPageExtensionData<PageExtensionData>(
-              pagePanelApi.target.pageId,
-              newPageExtensionData
-            )
-          } catch {
-            // Do nothing!
-          } finally {
-            loadingIndicatorRegistration.deactivate()
+              upvoteButton.addEventListener('click', async event => {
+                const cardExtensionData = cardApi.data.card.extensionData as CardExtensionData
+                await signedInApi.access.setCardExtensionData<CardExtensionData>(cardApi.target.cardId, {
+                  upvotingUserIds: currentContext.state.alreadyUpvotedByThisUser
+                    ? cardExtensionData?.upvotingUserIds.filter(userId => userId !== signedInApi.data.account.id) ?? []
+                    : [...(cardExtensionData?.upvotingUserIds ?? []), signedInApi.data.account.id],
+                })
+              })
+
+              applyState()
+
+              function applyState(): void {
+                if (currentContext.state.alreadyUpvotedByThisUser) {
+                  upvoteButton.classList.add('upvoted')
+                } else {
+                  upvoteButton.classList.remove('upvoted')
+                }
+                upvotesCount.style.display = currentContext.state.numberOfUpvotes > 0 ? 'inline' : 'none'
+                upvotesCount.innerText = String(currentContext.state.numberOfUpvotes)
+              }
+
+              return {
+                onUpdateState: applyState,
+              }
+            },
+          }),
+          position: 'bottom',
+        }))
+      )
+
+      // Read the stored extended data on the card and watch for its changes:
+      this.register(
+        cardApi.watch(
+          data => data.card.extensionData as CardExtensionData,
+          cardExtensionData => {
+            // Apply updates to the appended upvote button:
+            upvoteButtonRegistration.reference.current?.setState({
+              numberOfUpvotes: cardExtensionData?.upvotingUserIds.length ?? 0,
+              alreadyUpvotedByThisUser:
+                cardExtensionData?.upvotingUserIds.includes(signedInApi.data.account.id) ?? false,
+            })
+          },
+          {
+            initialCallback: true,
           }
-        }
-      })
+        )
+      )
     })
   })
 })
